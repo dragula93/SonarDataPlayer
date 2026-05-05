@@ -64,6 +64,11 @@
                     <RadioButton x:Name="OverlayMode"
                                  Content="Overlay"
                                  Checked="ViewMode_Checked"
+                                 Foreground="#D7DEE8"
+                                 Margin="0,0,14,0" />
+                    <RadioButton x:Name="SideScanMode"
+                                 Content="Side Scan"
+                                 Checked="ViewMode_Checked"
                                  Foreground="#D7DEE8" />
                 </StackPanel>
             </DockPanel>
@@ -72,7 +77,7 @@
         <Grid Grid.Row="1" Margin="16">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="54" />
+                <ColumnDefinition Width="104" />
                 <ColumnDefinition Width="280" />
             </Grid.ColumnDefinitions>
 
@@ -83,6 +88,7 @@
                 <Grid>
                     <Grid x:Name="ViewerHost"
                           Margin="8"
+                          PreviewMouseWheel="ViewerHost_PreviewMouseWheel"
                           SizeChanged="ViewerHost_SizeChanged" />
 
                     <TextBlock x:Name="EmptyViewerText"
@@ -94,32 +100,87 @@
                 </Grid>
             </Border>
 
-            <StackPanel Grid.Column="1"
-                        Margin="10,0,0,0"
+                <Grid Grid.Column="1"
+                  Margin="10,0,0,0"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="84" />
+                    <ColumnDefinition Width="12" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0"
                         HorizontalAlignment="Center"
                         VerticalAlignment="Center">
-                <Button x:Name="DepthZoomInButton"
-                        Width="40"
+                    <TextBlock x:Name="RangeMinLabel"
+                               Text="Min"
+                               Foreground="#8E9AAD"
+                               FontSize="11"
+                               Margin="0,0,0,2" />
+                    <TextBox x:Name="DepthMinRangeTextBox"
+                             Width="76"
+                             Height="24"
+                             Margin="0,0,0,6"
+                             HorizontalContentAlignment="Center"
+                             VerticalContentAlignment="Center"
+                             PreviewKeyDown="DepthRangeTextBox_KeyDown"
+                             LostFocus="DepthRangeTextBox_LostFocus" />
+
+                    <TextBlock x:Name="RangeMaxLabel"
+                               Text="Max"
+                               Foreground="#8E9AAD"
+                               FontSize="11"
+                               Margin="0,0,0,2" />
+                    <TextBox x:Name="DepthMaxRangeTextBox"
+                             Width="76"
+                             Height="24"
+                             Margin="0,0,0,6"
+                             HorizontalContentAlignment="Center"
+                             VerticalContentAlignment="Center"
+                             PreviewKeyDown="DepthRangeTextBox_KeyDown"
+                             LostFocus="DepthRangeTextBox_LostFocus" />
+
+                    <Button x:Name="DepthRangeApplyButton"
+                            Width="76"
+                            Height="24"
+                            Margin="0,0,0,8"
+                            Click="DepthRangeApply_Click"
+                            FontSize="11"
+                            FontWeight="SemiBold"
+                            Content="Set Range" />
+
+                    <Button x:Name="DepthZoomInButton"
+                        Width="76"
                         Height="48"
                         Click="DepthZoomIn_Click"
                         FontSize="24"
                         FontWeight="Bold"
                         Content="+" />
-                <Button x:Name="DepthZoomAutoButton"
-                        Width="40"
+                    <Button x:Name="DepthZoomAutoButton"
+                        Width="76"
                         Height="58"
                         Click="DepthZoomAuto_Click"
                         FontSize="12"
                         FontWeight="SemiBold"
                         Content="Auto" />
-                <Button x:Name="DepthZoomOutButton"
-                        Width="40"
+                    <Button x:Name="DepthZoomOutButton"
+                        Width="76"
                         Height="48"
                         Click="DepthZoomOut_Click"
                         FontSize="24"
                         FontWeight="Bold"
                         Content="-" />
-            </StackPanel>
+                </StackPanel>
+
+                <ScrollBar x:Name="DepthPanScrollBar"
+                       Grid.Column="1"
+                       Margin="2,6,0,6"
+                       Orientation="Vertical"
+                       Minimum="0"
+                       Maximum="0"
+                       IsEnabled="False"
+                       ValueChanged="DepthPanScrollBar_ValueChanged" />
+                </Grid>
 
             <Border Grid.Column="2"
                     Margin="14,0,0,0"
@@ -127,6 +188,8 @@
                     BorderBrush="#2B3442"
                     BorderThickness="1"
                     Background="#151A21">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
                     <TextBlock Text="Channels"
                                Foreground="#EEF2F7"
@@ -155,11 +218,121 @@
 
                     <Separator Margin="0,12,0,14" Background="#2B3442" />
 
+                    <TextBlock Text="Display"
+                               Foreground="#EEF2F7"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,10" />
+
+                    <TextBlock Text="Color Scheme"
+                               Foreground="#8E9AAD"
+                               Margin="0,0,0,4" />
+                    <Grid Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <ComboBox x:Name="PaletteSelector"
+                                  Grid.Column="0"
+                                  Height="32"
+                                  SelectionChanged="PaletteSelector_SelectionChanged"
+                                  IsTextSearchEnabled="True" />
+
+                        <CheckBox x:Name="FullPaletteListCheckBox"
+                                  Grid.Column="1"
+                                  Margin="10,0,0,0"
+                                  VerticalAlignment="Center"
+                                  Foreground="#D7DEE8"
+                                  Content="Full list"
+                                  Checked="PaletteListVisibilityChanged"
+                                  Unchecked="PaletteListVisibilityChanged" />
+                    </Grid>
+
+                    <TextBlock Text="Contrast"
+                               Foreground="#8E9AAD"
+                               Margin="0,0,0,4" />
+                    <ComboBox x:Name="ContrastSelector"
+                              Height="32"
+                              SelectionChanged="ContrastSelector_SelectionChanged"
+                              Margin="0,0,0,12">
+                        <ComboBoxItem Content="Soft (0.5%-99.9%)" Tag="soft" />
+                        <ComboBoxItem Content="Balanced (1%-99.5%)" Tag="balanced" />
+                        <ComboBoxItem Content="Strong (2%-99%)" Tag="strong" />
+                        <ComboBoxItem Content="Custom" Tag="custom" />
+                    </ComboBox>
+
+                        <TextBlock x:Name="ContrastLowClipLabel"
+                               Text="Low clip: 1.00%"
+                               Foreground="#8E9AAD"
+                               Margin="0,0,0,4" />
+                        <Slider x:Name="ContrastLowClipSlider"
+                            Height="28"
+                            Minimum="0"
+                            Maximum="20"
+                            ValueChanged="ContrastCustomSlider_ValueChanged"
+                            Margin="0,0,0,8" />
+
+                        <TextBlock x:Name="ContrastHighClipLabel"
+                               Text="High clip: 99.50%"
+                               Foreground="#8E9AAD"
+                               Margin="0,0,0,4" />
+                        <Slider x:Name="ContrastHighClipSlider"
+                            Height="28"
+                            Minimum="80"
+                            Maximum="100"
+                            ValueChanged="ContrastCustomSlider_ValueChanged"
+                            Margin="0,0,0,12" />
+
+                    <CheckBox x:Name="ContrastLockCheckBox"
+                              Content="Lock across channels"
+                              Foreground="#D7DEE8"
+                              Margin="0,0,0,12"
+                              Checked="ContrastLockCheckBox_Changed"
+                              Unchecked="ContrastLockCheckBox_Changed" />
+
+                        <TextBlock x:Name="SideScanBoostLabel"
+                               Text="Side scan boost: 0.60"
+                               Foreground="#8E9AAD"
+                               Margin="0,0,0,4" />
+                        <Slider x:Name="SideScanBoostSlider"
+                            Height="28"
+                            Minimum="0"
+                            Maximum="2"
+                            TickFrequency="0.05"
+                            ValueChanged="SideScanBoostSlider_ValueChanged"
+                            Margin="0,0,0,12" />
+
+                    <Separator Margin="0,0,0,14" Background="#2B3442" />
+
                     <TextBlock Text="Units"
                                Foreground="#EEF2F7"
                                FontSize="16"
                                FontWeight="SemiBold"
                                Margin="0,0,0,10" />
+
+                        <TextBlock Text="Timeline"
+                               Foreground="#EEF2F7"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,10" />
+
+                        <TextBlock Text="Along-Track Stretch"
+                               Foreground="#8E9AAD"
+                               Margin="0,0,0,4" />
+                        <Slider x:Name="AlongTrackStretchSlider"
+                            Height="28"
+                            Minimum="1.0"
+                            Maximum="4.0"
+                            Value="1.0"
+                            TickFrequency="0.1"
+                            ValueChanged="AlongTrackStretchSlider_ValueChanged" />
+                        <TextBlock x:Name="AlongTrackStretchValueText"
+                               Foreground="#D7DEE8"
+                               Margin="0,2,0,10"
+                               Text="1.00x" />
+
+                        <Separator Margin="0,0,0,14" Background="#2B3442" />
 
                     <TextBlock Text="Depth"
                                Foreground="#8E9AAD"
@@ -208,6 +381,7 @@
                         <ComboBoxItem Content="UTC" Tag="0" />
                     </ComboBox>
                 </StackPanel>
+                </ScrollViewer>
             </Border>
         </Grid>
 

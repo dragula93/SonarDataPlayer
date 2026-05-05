@@ -35,7 +35,7 @@ public partial class NewProjectWindow : Window
         var dialog = new OpenFileDialog
         {
             Title = "Select sonar recording",
-            Filter = "Sonar recordings (*.rsd;*.RSD;*.sl2;*.SL2;*.sl3;*.SL3)|*.rsd;*.RSD;*.sl2;*.SL2;*.sl3;*.SL3|All files (*.*)|*.*"
+            Filter = "Sonar recordings (*.dat;*.DAT;*.rsd;*.RSD;*.sl2;*.SL2;*.sl3;*.SL3;*.svlog;*.SVLOG;*.jsf;*.JSF;*.xtf;*.XTF)|*.dat;*.DAT;*.rsd;*.RSD;*.sl2;*.SL2;*.sl3;*.SL3;*.svlog;*.SVLOG;*.jsf;*.JSF;*.xtf;*.XTF|All files (*.*)|*.*"
         };
 
         if (dialog.ShowDialog(this) == true)
@@ -142,9 +142,14 @@ public partial class NewProjectWindow : Window
         }
 
         var ext = Path.GetExtension(inputFile).ToLowerInvariant();
-        if (ext is not ".rsd" and not ".sl2" and not ".sl3")
+        var supportedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            AppendOutput("Input must be .rsd, .sl2, or .sl3.");
+            ".dat", ".rsd", ".sl2", ".sl3", ".svlog", ".jsf", ".xtf"
+        };
+
+        if (!supportedExtensions.Contains(ext))
+        {
+            AppendOutput("Input must be one of: .dat, .rsd, .sl2, .sl3, .svlog, .jsf, .xtf.");
             return false;
         }
 
@@ -282,49 +287,28 @@ public partial class NewProjectWindow : Window
     }
 
     private const string PingverterRunnerCode = """
-import importlib.util
 import os
 import sys
-import types
 
 root, source, output = sys.argv[1], sys.argv[2], sys.argv[3]
-package_dir = os.path.join(root, "pingverter")
-if not os.path.isdir(package_dir):
-    raise FileNotFoundError(f"PINGverter package folder not found: {package_dir}")
+if not os.path.isdir(os.path.join(root, "pingverter")):
+    raise FileNotFoundError(f"PINGverter package folder not found: {root}")
 
-package = types.ModuleType("pingverter")
-package.__path__ = [package_dir]
-sys.modules["pingverter"] = package
+sys.path.insert(0, root)
 
-def load_module(name):
-    path = os.path.join(package_dir, name + ".py")
-    spec = importlib.util.spec_from_file_location("pingverter." + name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["pingverter." + name] = module
-    spec.loader.exec_module(module)
-    return module
-
-ext = os.path.splitext(source)[1].lower()
 print(f"Loading PINGverter from {root}", flush=True)
-print(f"Detected input format: {ext}", flush=True)
+print(f"Detected input format: {os.path.splitext(source)[1].lower()}", flush=True)
 
-if ext == ".rsd":
-    module = load_module("garmin_class")
-    sonar = module.gar(source, nchunk=500, exportUnknown=True)
-elif ext in (".sl2", ".sl3"):
-    module = load_module("lowrance_class")
-    sonar = module.low(source, nchunk=500, exportUnknown=True)
-    sonar.tempC = 1.0
-else:
-    raise ValueError(f"Unsupported recording extension: {ext}")
-
-if not hasattr(sonar, "write_sonar_data_player_project"):
-    raise AttributeError("Configured PINGverter checkout does not expose write_sonar_data_player_project for this format.")
+import pingverter
 
 print("Parsing recording and writing project...", flush=True)
-manifest = sonar.write_sonar_data_player_project(output, include_pngs=True)
+manifest = pingverter.export_sonar_data_player_project(
+    source,
+    output,
+    include_pngs=True,
+    nchunk=500,
+    exportUnknown=True,
+)
 print(f"Manifest: {manifest}", flush=True)
 print("Conversion complete.", flush=True)
 """;

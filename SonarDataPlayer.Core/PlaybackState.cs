@@ -27,14 +27,15 @@ public sealed class PlaybackState
         CurrentTimeSeconds = Math.Clamp(timeSeconds, 0, Math.Max(0, durationSeconds));
     }
 
-    public void Advance(TimeSpan elapsed, double durationSeconds)
+    public void Advance(TimeSpan elapsed, double durationSeconds, double? overrideRate = null)
     {
         if (!IsPlaying)
         {
             return;
         }
 
-        CurrentTimeSeconds += elapsed.TotalSeconds * PlaybackRate;
+        var rate = overrideRate ?? PlaybackRate;
+        CurrentTimeSeconds += elapsed.TotalSeconds * rate;
         if (CurrentTimeSeconds >= durationSeconds)
         {
             CurrentTimeSeconds = Math.Max(0, durationSeconds);

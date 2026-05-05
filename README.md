@@ -1,6 +1,6 @@
 # SonarDataPlayer
 
-SonarDataPlayer is a lightweight Windows desktop application for creating and playing back processed sonar projects. The current targets are Garmin RSD and Lowrance SL2/SL3 recordings exported into synchronized channel waterfall views and ping telemetry.
+SonarDataPlayer is a lightweight Windows desktop application for creating and playing back processed sonar projects. Raw recording conversion is delegated to PINGverter, so the New Project flow can process any format that PINGverter supports and can export into the SonarDataPlayer format.
 
 The app is intentionally a single-process .NET desktop program: no web server, Node.js, or browser frontend is required for playback. A local PINGverter checkout is currently used only when creating a new processed project from raw sonar recordings.
 
@@ -9,7 +9,7 @@ The app is intentionally a single-process .NET desktop program: no web server, N
 - WPF desktop application shell.
 - Core playback and telemetry models.
 - Processed project manifest loader.
-- In-app Garmin RSD and Lowrance SL2/SL3 project creation through PINGverter.
+- In-app raw recording project creation through PINGverter for supported formats.
 - Raw sample playback using `frames.jsonl` and `samples.u16le`, with PNG preview/fallback assets.
 - Play, pause, seek, speed selection, channel visibility, opacity controls, and telemetry readouts.
 - Depth, speed, temperature unit controls, time/depth zoom, auto depth range, and stacked/overlay channel views.
@@ -29,13 +29,17 @@ docs/                     Project format and development notes
 
 - Windows 10 or later.
 - .NET 8 SDK or newer.
-- Python 3 with `numpy`, `pandas`, and `pillow` if you want to create projects from `.RSD`, `.SL2`, or `.SL3` files inside the app.
-- A local PINGverter checkout with `write_sonar_data_player_project(...)` support for the formats you want to process.
+- Python 3 with `numpy`, `pandas`, and `pillow` if you want to create projects from raw recordings inside the app.
+- A local PINGverter checkout with `export_sonar_data_player_project(...)` support.
 
-For the current development workflow, use the companion PINGverter branches that add SonarDataPlayer project export support:
+Current New Project input extensions are:
 
-- Garmin RSD: `garmin-rsd-waterfall-validation`
-- Lowrance SL2/SL3: `lowrance-sonar-data-player-export`
+- `.dat` (Humminbird)
+- `.rsd` (Garmin)
+- `.sl2` and `.sl3` (Lowrance)
+- `.svlog` (Cerulean)
+- `.jsf` (EdgeTech)
+- `.xtf` (XTF)
 
 Check your SDK:
 
@@ -85,7 +89,7 @@ In the app:
 1. Use **Python...** to select a `python.exe` that can import `numpy`, `pandas`, and `PIL`.
 2. Set the local PINGverter repository root in **Python...**.
 3. Use **New Project**.
-4. Select a Garmin `.RSD` or Lowrance `.SL2` / `.SL3` file.
+4. Select a supported raw sonar file (`.dat`, `.rsd`, `.sl2`, `.sl3`, `.svlog`, `.jsf`, or `.xtf`).
 5. Choose the **Projects root** folder where generated projects should be stored.
 6. Click **Process Recording**.
 

@@ -4,6 +4,12 @@
     <ProjectReference Include="..\SonarDataPlayer.Core\SonarDataPlayer.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\SonarDataPlayer.Core\MatplotlibPalettes.json" Link="MatplotlibPalettes.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
