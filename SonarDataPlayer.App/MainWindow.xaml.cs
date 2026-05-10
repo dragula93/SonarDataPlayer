@@ -904,13 +904,25 @@ public partial class MainWindow : Window
         }
 
         DepthReadout.Text = $"Depth: {FormatDepth(ping.DepthMeters)}";
-        RangeReadout.Text = $"Range: {FormatDepth(ping.MinimumRangeMeters)} - {FormatDepth(ping.MaximumRangeMeters)}";
         PositionReadout.Text = $"Position: {Format(ping.Latitude, "0.000000")}, {Format(ping.Longitude, "0.000000")}";
         SpeedReadout.Text = $"Speed: {FormatSpeed(ping.SpeedMetersPerSecond)}";
-        HeadingReadout.Text = $"Heading: {Format(ping.HeadingDegrees, "0")} deg";
+        UpdateHeadingCompass(ping.HeadingDegrees);
         TempReadout.Text = $"Water Temp: {FormatTemperature(ping.TemperatureCelsius)}";
-        PingReadout.Text = $"Ping: {ping.RecordNumber}  Ch: {ping.ChannelId}  Samples: {ping.SampleCount}";
         UpdateViewerTelemetry(ping);
+    }
+
+    private void UpdateHeadingCompass(double? headingDegrees)
+    {
+        if (!headingDegrees.HasValue)
+        {
+            HeadingNeedleTransform.Angle = 0;
+            HeadingDegreesReadout.Text = "- deg";
+            return;
+        }
+
+        var normalizedHeading = ((headingDegrees.Value % 360) + 360) % 360;
+        HeadingNeedleTransform.Angle = normalizedHeading;
+        HeadingDegreesReadout.Text = $"{normalizedHeading:0} deg";
     }
 
     private static string Format(double? value, string format)
