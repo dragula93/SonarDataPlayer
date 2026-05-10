@@ -1,12 +1,55 @@
 <Window x:Class="SonarDataPlayer.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Sonar Data Player v0.3.0"
+        Title="Sonar Data Player v0.4.0"
         Height="820"
         MinHeight="620"
         Width="1280"
         MinWidth="980"
         Background="#101318">
+    <Window.Resources>
+        <Style x:Key="ViewModeSegmentButton" TargetType="{x:Type RadioButton}">
+            <Setter Property="Foreground" Value="#1F2933" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="MinWidth" Value="118" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type RadioButton}">
+                        <Border x:Name="Segment"
+                                Margin="2"
+                                CornerRadius="16"
+                                Background="#EEF2F7"
+                                BorderBrush="#C9D3DF"
+                                BorderThickness="1">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Segment" Property="Background" Value="#FFFFFF" />
+                                <Setter TargetName="Segment" Property="BorderBrush" Value="#FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter TargetName="Segment" Property="Background" Value="#2E8A57" />
+                                <Setter TargetName="Segment" Property="BorderBrush" Value="#5CDC8B" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="56" />
@@ -52,33 +95,18 @@
                            Text="" />
                 <TextBlock x:Name="RecordingTitle"
                            VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis"
                            Foreground="#EEF2F7"
                            FontSize="18"
                            FontWeight="SemiBold"
                            Text="No recording loaded" />
-                <StackPanel DockPanel.Dock="Right"
-                            Orientation="Horizontal"
-                            VerticalAlignment="Center">
-                    <TextBlock Text="v0.3.0"
-                               Foreground="#8E9AAD"
-                               VerticalAlignment="Center"
-                               Margin="0,0,18,0" />
-                    <RadioButton x:Name="StackedMode"
-                                 Content="Stacked"
-                                 Foreground="#D7DEE8"
-                                 IsChecked="True"
-                                 Checked="ViewMode_Checked"
-                                 Margin="0,0,14,0" />
-                    <RadioButton x:Name="OverlayMode"
-                                 Content="Overlay"
-                                 Checked="ViewMode_Checked"
-                                 Foreground="#D7DEE8"
-                                 Margin="0,0,14,0" />
-                    <RadioButton x:Name="SideScanMode"
-                                 Content="Side Scan"
-                                 Checked="ViewMode_Checked"
-                                 Foreground="#D7DEE8" />
-                </StackPanel>
+                <TextBlock DockPanel.Dock="Right"
+                           Width="72"
+                           Text="v0.4.0"
+                           Foreground="#8E9AAD"
+                           TextAlignment="Right"
+                           VerticalAlignment="Center"
+                           Margin="18,0,0,0" />
             </DockPanel>
         </Border>
 
@@ -398,6 +426,10 @@
 
         <Border Grid.Row="2" Background="#171B22" BorderBrush="#242B36" BorderThickness="0,1">
             <Grid Margin="16,10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="38" />
+                    <RowDefinition Height="34" />
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="88" />
                     <ColumnDefinition Width="*" />
@@ -407,17 +439,20 @@
                 </Grid.ColumnDefinitions>
 
                 <Button x:Name="PlayPauseButton"
+                        Grid.Row="0"
                         Width="72"
                         Height="34"
                         Click="PlayPause_Click"
                         Content="Play" />
                 <Slider x:Name="SeekSlider"
+                        Grid.Row="0"
                         Grid.Column="1"
                         Minimum="0"
                         Maximum="1"
                         ValueChanged="SeekSlider_ValueChanged"
                         Margin="10,0" />
                 <ComboBox x:Name="ZoomSelector"
+                          Grid.Row="0"
                           Grid.Column="2"
                           Height="32"
                           SelectedIndex="0"
@@ -429,6 +464,7 @@
                     <ComboBoxItem Content="+/- 10s" Tag="20" />
                 </ComboBox>
                 <ComboBox x:Name="RateSelector"
+                          Grid.Row="0"
                           Grid.Column="3"
                           Height="32"
                           SelectedIndex="2"
@@ -440,11 +476,49 @@
                     <ComboBoxItem Content="4x" Tag="4" />
                 </ComboBox>
                 <TextBlock x:Name="TimeReadout"
+                           Grid.Row="0"
                            Grid.Column="4"
                            VerticalAlignment="Center"
                            Foreground="#D7DEE8"
                            TextAlignment="Right"
                            Text="0.0 / 0.0 s" />
+
+                <Border Grid.Row="1"
+                        Grid.Column="1"
+                        Width="390"
+                        Height="34"
+                        HorizontalAlignment="Center"
+                        Background="#D7DEE8"
+                        BorderBrush="#FFFFFF"
+                        BorderThickness="1"
+                        CornerRadius="18">
+                    <Grid Margin="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <RadioButton x:Name="StackedMode"
+                                     Grid.Column="0"
+                                     GroupName="ViewMode"
+                                     Style="{StaticResource ViewModeSegmentButton}"
+                                     Content="Stacked"
+                                     IsChecked="True"
+                                     Checked="ViewMode_Checked" />
+                        <RadioButton x:Name="OverlayMode"
+                                     Grid.Column="1"
+                                     GroupName="ViewMode"
+                                     Style="{StaticResource ViewModeSegmentButton}"
+                                     Content="Overlay"
+                                     Checked="ViewMode_Checked" />
+                        <RadioButton x:Name="SideScanMode"
+                                     Grid.Column="2"
+                                     GroupName="ViewMode"
+                                     Style="{StaticResource ViewModeSegmentButton}"
+                                     Content="Side Scan"
+                                     Checked="ViewMode_Checked" />
+                    </Grid>
+                </Border>
             </Grid>
         </Border>
 

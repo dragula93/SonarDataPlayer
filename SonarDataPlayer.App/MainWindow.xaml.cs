@@ -310,7 +310,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private bool IsSideScanMode() => SideScanMode.IsChecked == true;
+    private bool IsSideScanMode() => SideScanMode?.IsChecked == true;
 
     private void ViewMode_Checked(object sender, RoutedEventArgs e)
     {
@@ -1718,12 +1718,12 @@ public partial class MainWindow : Window
 
     private ViewModeKind GetSelectedViewMode()
     {
-        if (SideScanMode.IsChecked == true)
+        if (SideScanMode?.IsChecked == true)
         {
             return ViewModeKind.SideScan;
         }
 
-        if (OverlayMode.IsChecked == true)
+        if (OverlayMode?.IsChecked == true)
         {
             return ViewModeKind.Overlay;
         }
