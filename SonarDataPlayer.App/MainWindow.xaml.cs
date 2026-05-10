@@ -5,6 +5,8 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -30,6 +32,11 @@ namespace SonarDataPlayer.App;
 public partial class MainWindow : Window
 {
     private const string DefaultContrastPreset = "balanced";
+    private static readonly JsonSerializerOptions ProjectSettingsJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true
+    };
 
     private readonly ObservableCollection<ChannelViewModel> _channels = new();
     private readonly PlaybackState _playback = new();
@@ -63,6 +70,16 @@ public partial class MainWindow : Window
     private int _frameCount;
     private readonly DispatcherTimer _depthRebuildDebounceTimer;
     private bool _isDepthRebuildPending;
+    private CancellationTokenSource? _renderCancellation;
+    private int _renderRequestVersion;
+    private string? _manifestPath;
+    private bool _isProjectDirty;
+    private bool _isApplyingProjectSettings;
+    private ViewModeKind _currentViewMode = ViewModeKind.Stacked;
+    private DepthRangeState _stackedDepthRange = DepthRangeState.Auto();
+    private DepthRangeState _overlayDepthRange = DepthRangeState.Auto();
+    private DepthRangeState _sideScanDepthRange = DepthRangeState.Manual(null, 0);
+    private Dictionary<ViewModeKind, Dictionary<int, ChannelDisplayState>> _channelStatesByView = new();
 
     public MainWindow()
     {
@@ -91,6 +108,14 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromMilliseconds(40)
         };
         _depthRebuildDebounceTimer.Tick += DepthRebuildDebounceTimer_Tick;
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _timer.Stop();
+        _depthRebuildDebounceTimer.Stop();
+        CancelPendingRender();
+        base.OnClosed(e);
     }
 
     private void OpenManifest_Click(object sender, RoutedEventArgs e)
@@ -135,6 +160,11 @@ public partial class MainWindow : Window
             ProjectStatusText.Text = "Python settings saved";
             ProjectStatusText.Foreground = new SolidColorBrush(Color.FromRgb(88, 214, 141));
         }
+    }
+
+    private void SaveProject_Click(object sender, RoutedEventArgs e)
+    {
+        SaveProjectSettings();
     }
 
     internal static string? FindPythonExecutable(AppSettings settings)
@@ -224,14 +254,18 @@ public partial class MainWindow : Window
 
     private void LoadRecording(string manifestPath)
     {
+        CancelPendingRender();
+        _manifestPath = manifestPath;
         _recording = ProcessedProjectLoader.Load(manifestPath);
+        _rawChannelImages = new Dictionary<int, BitmapSource>();
+        _sideScanImage = null;
+        _sideScanMaxRangeMeters = 0;
         _manualMaxDepthMeters = GetFileMaxRangeMeters();
         _manualDepthOffsetMeters = 0;
         _isDepthAutoRange = false;
         BuildFrameTimelineModel();
         _autoMaxDepthMeters = GetAutoMaxRangeMeters();
         ClampManualDepthOffset();
-        RenderRawChannelImages();
         _channels.Clear();
 
         foreach (var channel in _recording.Channels)
@@ -241,6 +275,10 @@ public partial class MainWindow : Window
             vm.PropertyChanged += Channel_PropertyChanged;
             _channels.Add(vm);
         }
+
+        InitializeViewModeDepthRanges();
+
+        ApplyProjectSettings(LoadProjectSettings(manifestPath));
 
         var title = string.IsNullOrWhiteSpace(_recording.SourcePath)
             ? Path.GetFileNameWithoutExtension(manifestPath)
@@ -258,12 +296,16 @@ public partial class MainWindow : Window
         UpdateDepthAutoButtonState();
         UpdateDepthPanScrollBarState();
         RefreshDepthRangeInputs();
+        SetProjectDirty(false);
+        RequestDepthScaledRebuild(immediate: true);
     }
 
     private void Channel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(ChannelViewModel.IsVisible) or nameof(ChannelViewModel.Opacity))
         {
+            SaveCurrentViewState();
+            MarkProjectDirty();
             RenderChannels();
         }
     }
@@ -274,6 +316,24 @@ public partial class MainWindow : Window
     {
         if (IsLoaded)
         {
+            var nextViewMode = GetSelectedViewMode();
+            if (_isApplyingProjectSettings)
+            {
+                _currentViewMode = nextViewMode;
+                return;
+            }
+
+            if (nextViewMode != _currentViewMode)
+            {
+                SaveDepthRangeState(_currentViewMode);
+                SaveChannelState(_currentViewMode);
+                _currentViewMode = nextViewMode;
+                RestoreDepthRangeState(_currentViewMode);
+                RestoreChannelState(_currentViewMode);
+                MarkProjectDirty();
+            }
+
+            RenderChannels();
             RebuildDepthScaledView();
         }
     }
@@ -314,6 +374,7 @@ public partial class MainWindow : Window
             double.TryParse(tag, out var rate))
         {
             _playback.SetRate(rate);
+            MarkProjectDirty();
         }
 
         UpdateReadouts();
@@ -323,6 +384,7 @@ public partial class MainWindow : Window
     {
         _alongTrackStretch = Math.Clamp(e.NewValue, 1.0, 4.0);
         UpdateAlongTrackStretchReadout();
+        MarkProjectDirty();
 
         if (_recording is null)
         {
@@ -339,6 +401,7 @@ public partial class MainWindow : Window
         _speedUnit = SelectedSpeedUnit();
         _temperatureUnit = SelectedTemperatureUnit();
         _utcOffsetHours = SelectedUtcOffsetHours();
+        MarkProjectDirty();
 
         if (_recording is not null && _isDepthAutoRange)
         {
@@ -355,6 +418,7 @@ public partial class MainWindow : Window
     private void ZoomSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         _zoomWindowSeconds = SelectedZoomWindowSeconds();
+        MarkProjectDirty();
         UpdateImageViewports();
         UpdateCursorPositions();
     }
@@ -375,6 +439,7 @@ public partial class MainWindow : Window
 
         _settings = _settings with { PaletteName = normalizedPalette };
         _settings.Save();
+        MarkProjectDirty();
 
         if (_recording is not null)
         {
@@ -398,6 +463,7 @@ public partial class MainWindow : Window
 
         _settings = _settings with { ShowFullPaletteList = showFullPaletteList };
         _settings.Save();
+        MarkProjectDirty();
         RefreshPaletteOptions(_settings.PaletteName);
     }
 
@@ -416,6 +482,7 @@ public partial class MainWindow : Window
 
         _settings = _settings with { ContrastPreset = selectedPreset };
         _settings.Save();
+        MarkProjectDirty();
         UpdateCustomContrastControlState();
 
         if (_recording is not null)
@@ -464,12 +531,20 @@ public partial class MainWindow : Window
             CustomContrastLowPercentile = lowPercentile,
             CustomContrastHighPercentile = highPercentile
         };
-        _settings.Save();
-
+        MarkProjectDirty();
         if (_recording is not null && string.Equals(SelectedContrastPreset(), "custom", StringComparison.OrdinalIgnoreCase))
         {
+            if (ShouldDeferRenderForSlider(sender))
+            {
+                return;
+            }
+
+            _settings.Save();
             RebuildDepthScaledView();
+            return;
         }
+
+        _settings.Save();
     }
 
     private void ContrastLockCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -486,12 +561,51 @@ public partial class MainWindow : Window
         }
 
         _settings = _settings with { ContrastLockAcrossChannels = lockAcrossChannels };
-        _settings.Save();
-
+        MarkProjectDirty();
         if (_recording is not null)
         {
+            if (ShouldDeferRenderForSlider(sender))
+            {
+                return;
+            }
+
+            _settings.Save();
             RebuildDepthScaledView();
+            return;
         }
+
+        _settings.Save();
+    }
+
+    private void RenderSettingSlider_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_recording is null || !SliderAffectsRenderedBitmap(sender))
+        {
+            return;
+        }
+
+        _settings.Save();
+        RebuildDepthScaledView();
+    }
+
+    private static bool ShouldDeferRenderForSlider(object sender)
+    {
+        return sender is Slider slider && slider.IsMouseCaptureWithin;
+    }
+
+    private bool SliderAffectsRenderedBitmap(object sender)
+    {
+        if (ReferenceEquals(sender, SideScanBoostSlider))
+        {
+            return true;
+        }
+
+        if (!string.Equals(SelectedContrastPreset(), "custom", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return ReferenceEquals(sender, ContrastLowClipSlider) || ReferenceEquals(sender, ContrastHighClipSlider);
     }
 
     private void SideScanBoostSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -510,6 +624,7 @@ public partial class MainWindow : Window
 
         _settings = _settings with { SideScanContrastBoost = boost };
         _settings.Save();
+        MarkProjectDirty();
 
         if (_recording is not null)
         {
@@ -528,6 +643,8 @@ public partial class MainWindow : Window
         _isDepthAutoRange = false;
         _manualMaxDepthMeters = Math.Max(3.0, current * 0.8);
         ClampManualDepthOffset();
+        SaveCurrentViewState();
+        MarkProjectDirty();
         RebuildDepthScaledView();
         RefreshDepthRangeInputs();
     }
@@ -544,6 +661,8 @@ public partial class MainWindow : Window
         _isDepthAutoRange = false;
         _manualMaxDepthMeters = Math.Min(GetFileMaxRangeMeters(), Math.Max(auto, current * 1.25));
         ClampManualDepthOffset();
+        SaveCurrentViewState();
+        MarkProjectDirty();
         RebuildDepthScaledView();
         RefreshDepthRangeInputs();
     }
@@ -559,6 +678,8 @@ public partial class MainWindow : Window
         _manualMaxDepthMeters = null;
         _manualDepthOffsetMeters = 0;
         _autoMaxDepthMeters = GetAutoMaxRangeMeters();
+        SaveCurrentViewState();
+        MarkProjectDirty();
         RebuildDepthScaledView();
         RefreshDepthRangeInputs();
     }
@@ -617,6 +738,8 @@ public partial class MainWindow : Window
             _manualDepthOffsetMeters = 0;
             _manualMaxDepthMeters = rangeMeters;
             ClampManualDepthOffset();
+            SaveCurrentViewState();
+            MarkProjectDirty();
             RebuildDepthScaledView();
             RefreshDepthRangeInputs();
             return;
@@ -644,6 +767,8 @@ public partial class MainWindow : Window
         _manualDepthOffsetMeters = minMeters;
         _manualMaxDepthMeters = Math.Max(0.25, maxMeters - minMeters);
         ClampManualDepthOffset();
+        SaveCurrentViewState();
+        MarkProjectDirty();
         RebuildDepthScaledView();
         RefreshDepthRangeInputs();
     }
@@ -671,6 +796,8 @@ public partial class MainWindow : Window
         }
 
         _manualDepthOffsetMeters = nextOffset;
+        SaveCurrentViewState();
+        MarkProjectDirty();
         RequestDepthScaledRebuild();
         e.Handled = true;
     }
@@ -696,6 +823,8 @@ public partial class MainWindow : Window
         }
 
         _manualDepthOffsetMeters = nextOffset;
+        SaveCurrentViewState();
+        MarkProjectDirty();
         RequestDepthScaledRebuild();
     }
 
@@ -1155,28 +1284,126 @@ public partial class MainWindow : Window
 
     private void RebuildDepthScaledView()
     {
+        _ = RebuildDepthScaledViewAsync();
+    }
+
+    private async Task RebuildDepthScaledViewAsync()
+    {
         ClampManualDepthOffset();
-        RenderRawChannelImages();
-
-        // Build the combined side-scan bitmap when that mode is active and initialise range.
-        if (IsSideScanMode() && _recording is not null)
+        if (_recording is null)
         {
-            var (lowP, highP) = GetContrastPercentiles(_settings.ContrastPreset);
-            _sideScanImage = BinaryWaterfallRenderer.RenderSideScan(
-                _recording,
-                _settings.PaletteName,
-                lowP, highP,
-                Math.Clamp(_settings.SideScanContrastBoost, 0, 2.0));
+            return;
+        }
 
-            // If the SS max range hasn't been set yet (or changed), initialise it and reset
-            // the range controls to show the full swath.
-            var ssMax = BinaryWaterfallRenderer.GetSideScanMaxRangeMeters(_recording);
-            if (ssMax > 0 && Math.Abs(ssMax - _sideScanMaxRangeMeters) > 0.001)
+        var request = CreateRenderRequest();
+        var version = ++_renderRequestVersion;
+        var cancellation = new CancellationTokenSource();
+        var previousCancellation = Interlocked.Exchange(ref _renderCancellation, cancellation);
+        previousCancellation?.Cancel();
+
+        RenderResult result;
+        try
+        {
+            result = await Task.Run(() => RenderBitmapSet(request, cancellation.Token), cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            ProjectStatusText.Text = $"Render failed: {ex.Message}";
+            ProjectStatusText.Foreground = new SolidColorBrush(Color.FromRgb(231, 76, 60));
+            return;
+        }
+        finally
+        {
+            if (ReferenceEquals(_renderCancellation, cancellation))
             {
-                _sideScanMaxRangeMeters = ssMax;
+                _renderCancellation = null;
+            }
+
+            cancellation.Dispose();
+        }
+
+        if (version != _renderRequestVersion || _recording != request.Recording)
+        {
+            return;
+        }
+
+        ApplyRenderResult(result, request);
+    }
+
+    private void CancelPendingRender()
+    {
+        _renderRequestVersion++;
+        var cancellation = Interlocked.Exchange(ref _renderCancellation, null);
+        cancellation?.Cancel();
+    }
+
+    private RenderRequest CreateRenderRequest()
+    {
+        var (lowPercentile, highPercentile) = GetContrastPercentiles(_settings.ContrastPreset);
+        return new RenderRequest(
+            _recording!,
+            GetDisplayMinRangeMeters(),
+            GetDisplayMaxRangeMeters(),
+            _settings.PaletteName,
+            lowPercentile,
+            highPercentile,
+            IsContrastLockedAcrossChannels(),
+            Math.Clamp(_settings.SideScanContrastBoost, 0, 2.0),
+            IsSideScanMode());
+    }
+
+    private static RenderResult RenderBitmapSet(RenderRequest request, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (request.IsSideScanMode)
+        {
+            var sideScanImage = BinaryWaterfallRenderer.RenderSideScan(
+                request.Recording,
+                request.PaletteName,
+                request.LowPercentile,
+                request.HighPercentile,
+                request.SideScanBoost);
+            var sideScanMaxRangeMeters = BinaryWaterfallRenderer.GetSideScanMaxRangeMeters(request.Recording);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return new RenderResult(null, sideScanImage, sideScanMaxRangeMeters);
+        }
+
+        var rawChannelImages = BinaryWaterfallRenderer.Render(
+            request.Recording,
+            request.DisplayMinRangeMeters,
+            request.DisplayMaxRangeMeters > 0 ? request.DisplayMaxRangeMeters : null,
+            request.PaletteName,
+            request.LowPercentile,
+            request.HighPercentile,
+            request.LockAcrossChannels,
+            request.SideScanBoost);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return new RenderResult(rawChannelImages, null, 0);
+    }
+
+    private void ApplyRenderResult(RenderResult result, RenderRequest request)
+    {
+        if (result.RawChannelImages is not null)
+        {
+            _rawChannelImages = result.RawChannelImages;
+        }
+
+        if (request.IsSideScanMode)
+        {
+            _sideScanImage = result.SideScanImage;
+            if (result.SideScanMaxRangeMeters > 0 && Math.Abs(result.SideScanMaxRangeMeters - _sideScanMaxRangeMeters) > 0.001)
+            {
+                _sideScanMaxRangeMeters = result.SideScanMaxRangeMeters;
                 _isDepthAutoRange = false;
                 _manualDepthOffsetMeters = 0;
-                _manualMaxDepthMeters = ssMax;
+                _manualMaxDepthMeters = result.SideScanMaxRangeMeters;
+                SaveDepthRangeState(ViewModeKind.SideScan);
             }
         }
         else
@@ -1190,6 +1417,17 @@ public partial class MainWindow : Window
             _rawChannelImages.TryGetValue(channel.Channel.ChannelId, out var rawImage);
             channel.SetImage(rawImage ?? ChannelViewModel.LoadRotatedPreviewImage(channel.Channel.WaterfallPath));
         }
+
+        if (_recording is not null)
+        {
+            var title = string.IsNullOrWhiteSpace(_recording.SourcePath)
+                ? RecordingTitle.Text.Split("  | ", StringSplitOptions.None)[0]
+                : Path.GetFileName(_recording.SourcePath);
+            RecordingTitle.Text = _rawChannelImages.Count > 0
+                ? $"{title}  | raw samples"
+                : $"{title}  | preview PNGs";
+        }
+
         RenderChannels();
         UpdateReadouts();
         UpdateDepthAutoButtonState();
@@ -1197,24 +1435,401 @@ public partial class MainWindow : Window
         RefreshDepthRangeInputs();
     }
 
-    private void RenderRawChannelImages()
+    private void SaveProjectSettings()
     {
-        var displayMinRange = GetDisplayMinRangeMeters();
-        var displayMaxRange = GetDisplayMaxRangeMeters();
-        var (lowPercentile, highPercentile) = GetContrastPercentiles(_settings.ContrastPreset);
-        var lockAcrossChannels = IsContrastLockedAcrossChannels();
-        var sideScanBoost = Math.Clamp(_settings.SideScanContrastBoost, 0, 2.0);
-        _rawChannelImages = _recording is null
-            ? new Dictionary<int, BitmapSource>()
-            : BinaryWaterfallRenderer.Render(
-                _recording,
-                displayMinRange,
-                displayMaxRange > 0 ? displayMaxRange : null,
-                _settings.PaletteName,
-                lowPercentile,
-                highPercentile,
-            lockAcrossChannels,
-            sideScanBoost);
+        if (string.IsNullOrWhiteSpace(_manifestPath) || !File.Exists(_manifestPath))
+        {
+            ProjectStatusText.Text = "No project to save";
+            ProjectStatusText.Foreground = new SolidColorBrush(Color.FromRgb(231, 76, 60));
+            return;
+        }
+
+        SaveCurrentViewState();
+        var manifest = JsonNode.Parse(File.ReadAllText(_manifestPath)) as JsonObject ?? new JsonObject();
+        manifest["playerSettings"] = JsonSerializer.SerializeToNode(CaptureProjectSettings(), ProjectSettingsJsonOptions);
+        File.WriteAllText(_manifestPath, manifest.ToJsonString(ProjectSettingsJsonOptions));
+
+        SetProjectDirty(false);
+        ProjectStatusText.Text = "Project saved";
+        ProjectStatusText.Foreground = new SolidColorBrush(Color.FromRgb(88, 214, 141));
+    }
+
+    private void MarkProjectDirty()
+    {
+        if (_isApplyingProjectSettings || _recording is null)
+        {
+            return;
+        }
+
+        SetProjectDirty(true);
+    }
+
+    private void SetProjectDirty(bool isDirty)
+    {
+        _isProjectDirty = isDirty;
+        if (SaveProjectButton is not null)
+        {
+            SaveProjectButton.IsEnabled = isDirty && _recording is not null;
+            SaveProjectButton.Opacity = SaveProjectButton.IsEnabled ? 1.0 : 0.55;
+        }
+
+        if (!isDirty && ProjectStatusText is not null && string.Equals(ProjectStatusText.Text, "Unsaved changes", StringComparison.Ordinal))
+        {
+            ProjectStatusText.Text = string.Empty;
+        }
+        else if (isDirty && ProjectStatusText is not null)
+        {
+            ProjectStatusText.Text = "Unsaved changes";
+            ProjectStatusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
+        }
+    }
+
+    private ProjectPlayerSettings? LoadProjectSettings(string manifestPath)
+    {
+        try
+        {
+            var manifest = JsonNode.Parse(File.ReadAllText(manifestPath)) as JsonObject;
+            return manifest?["playerSettings"]?.Deserialize<ProjectPlayerSettings>(ProjectSettingsJsonOptions);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void ApplyProjectSettings(ProjectPlayerSettings? projectSettings)
+    {
+        if (projectSettings is null)
+        {
+            return;
+        }
+
+        _isApplyingProjectSettings = true;
+        try
+        {
+            ApplyDisplaySettings(projectSettings.Display);
+            ApplyUnitSettings(projectSettings.Units);
+            ApplyTimelineSettings(projectSettings.Timeline);
+            ApplyViewStates(projectSettings.Views);
+
+            var viewMode = ParseViewMode(projectSettings.ActiveViewMode) ?? _currentViewMode;
+            SetSelectedViewMode(viewMode);
+            _currentViewMode = viewMode;
+            RestoreDepthRangeState(_currentViewMode);
+            RestoreChannelState(_currentViewMode);
+        }
+        finally
+        {
+            _isApplyingProjectSettings = false;
+        }
+    }
+
+    private ProjectPlayerSettings CaptureProjectSettings()
+    {
+        SaveCurrentViewState();
+        return new ProjectPlayerSettings(
+            ActiveViewMode: _currentViewMode.ToString(),
+            Views: new ProjectViewSettings(
+                Stacked: CaptureViewSettings(ViewModeKind.Stacked),
+                Overlay: CaptureViewSettings(ViewModeKind.Overlay),
+                SideScan: CaptureViewSettings(ViewModeKind.SideScan)),
+            Display: new ProjectDisplaySettings(
+                PaletteName: _settings.PaletteName,
+                ShowFullPaletteList: _settings.ShowFullPaletteList,
+                ContrastPreset: _settings.ContrastPreset,
+                ContrastLockAcrossChannels: _settings.ContrastLockAcrossChannels,
+                CustomContrastLowPercentile: _settings.CustomContrastLowPercentile,
+                CustomContrastHighPercentile: _settings.CustomContrastHighPercentile,
+                SideScanContrastBoost: _settings.SideScanContrastBoost),
+            Units: new ProjectUnitSettings(
+                Depth: _depthUnit.ToString(),
+                Speed: _speedUnit.ToString(),
+                Temperature: _temperatureUnit.ToString(),
+                UtcOffsetHours: _utcOffsetHours),
+            Timeline: new ProjectTimelineSettings(
+                ZoomWindowSeconds: _zoomWindowSeconds,
+                PlaybackRate: _playback.PlaybackRate,
+                AlongTrackStretch: _alongTrackStretch));
+    }
+
+    private ProjectSingleViewSettings CaptureViewSettings(ViewModeKind viewMode)
+    {
+        var depthRange = viewMode switch
+        {
+            ViewModeKind.SideScan => _sideScanDepthRange,
+            ViewModeKind.Overlay => _overlayDepthRange,
+            _ => _stackedDepthRange
+        };
+        var channelStates = _channelStatesByView.TryGetValue(viewMode, out var states)
+            ? states
+            : CaptureChannelState();
+
+        return new ProjectSingleViewSettings(
+            DepthRange: depthRange,
+            Channels: channelStates.ToDictionary(
+                pair => pair.Key.ToString(CultureInfo.InvariantCulture),
+                pair => pair.Value));
+    }
+
+    private void ApplyDisplaySettings(ProjectDisplaySettings? display)
+    {
+        if (display is null)
+        {
+            return;
+        }
+
+        _settings = _settings with
+        {
+            PaletteName = SonarPaletteCatalog.NormalizeName(display.PaletteName ?? _settings.PaletteName),
+            ShowFullPaletteList = display.ShowFullPaletteList ?? _settings.ShowFullPaletteList,
+            ContrastPreset = NormalizeContrastPreset(display.ContrastPreset ?? _settings.ContrastPreset),
+            ContrastLockAcrossChannels = display.ContrastLockAcrossChannels ?? _settings.ContrastLockAcrossChannels,
+            CustomContrastLowPercentile = display.CustomContrastLowPercentile ?? _settings.CustomContrastLowPercentile,
+            CustomContrastHighPercentile = display.CustomContrastHighPercentile ?? _settings.CustomContrastHighPercentile,
+            SideScanContrastBoost = display.SideScanContrastBoost ?? _settings.SideScanContrastBoost
+        };
+
+        FullPaletteListCheckBox.IsChecked = _settings.ShowFullPaletteList;
+        RefreshPaletteOptions(_settings.PaletteName);
+        RefreshContrastPresetOptions(_settings.ContrastPreset);
+        RefreshCustomContrastControls();
+        ContrastLockCheckBox.IsChecked = _settings.ContrastLockAcrossChannels;
+        RefreshSideScanBoostControl();
+    }
+
+    private void ApplyUnitSettings(ProjectUnitSettings? units)
+    {
+        if (units is null)
+        {
+            return;
+        }
+
+        SetComboBoxByTag(DepthUnitSelector, units.Depth);
+        SetComboBoxByTag(SpeedUnitSelector, units.Speed);
+        SetComboBoxByTag(TemperatureUnitSelector, units.Temperature);
+        SetComboBoxByTag(UtcOffsetSelector, units.UtcOffsetHours?.ToString(CultureInfo.InvariantCulture));
+        _depthUnit = SelectedDepthUnit();
+        _speedUnit = SelectedSpeedUnit();
+        _temperatureUnit = SelectedTemperatureUnit();
+        _utcOffsetHours = SelectedUtcOffsetHours();
+    }
+
+    private void ApplyTimelineSettings(ProjectTimelineSettings? timeline)
+    {
+        if (timeline is null)
+        {
+            return;
+        }
+
+        SetComboBoxByTag(ZoomSelector, timeline.ZoomWindowSeconds?.ToString(CultureInfo.InvariantCulture));
+        SetComboBoxByTag(RateSelector, timeline.PlaybackRate?.ToString(CultureInfo.InvariantCulture));
+        _zoomWindowSeconds = SelectedZoomWindowSeconds();
+        if (timeline.PlaybackRate.HasValue)
+        {
+            _playback.SetRate(timeline.PlaybackRate.Value);
+        }
+
+        if (timeline.AlongTrackStretch.HasValue)
+        {
+            _alongTrackStretch = Math.Clamp(timeline.AlongTrackStretch.Value, 1.0, 4.0);
+            AlongTrackStretchSlider.Value = _alongTrackStretch;
+            UpdateAlongTrackStretchReadout();
+        }
+    }
+
+    private void ApplyViewStates(ProjectViewSettings? views)
+    {
+        if (views is null)
+        {
+            return;
+        }
+
+        ApplyViewState(ViewModeKind.Stacked, views.Stacked);
+        ApplyViewState(ViewModeKind.Overlay, views.Overlay);
+        ApplyViewState(ViewModeKind.SideScan, views.SideScan);
+    }
+
+    private void ApplyViewState(ViewModeKind viewMode, ProjectSingleViewSettings? settings)
+    {
+        if (settings is null)
+        {
+            return;
+        }
+
+        if (settings.DepthRange is not null)
+        {
+            switch (viewMode)
+            {
+                case ViewModeKind.SideScan:
+                    _sideScanDepthRange = settings.DepthRange;
+                    break;
+                case ViewModeKind.Overlay:
+                    _overlayDepthRange = settings.DepthRange;
+                    break;
+                default:
+                    _stackedDepthRange = settings.DepthRange;
+                    break;
+            }
+        }
+
+        if (settings.Channels is not null)
+        {
+            _channelStatesByView[viewMode] = settings.Channels
+                .Where(pair => int.TryParse(pair.Key, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+                .ToDictionary(
+                    pair => int.Parse(pair.Key, CultureInfo.InvariantCulture),
+                    pair => pair.Value);
+        }
+    }
+
+    private static void SetComboBoxByTag(System.Windows.Controls.ComboBox comboBox, string? tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return;
+        }
+
+        foreach (var item in comboBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag as string, tag, StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedItem = item;
+                return;
+            }
+        }
+    }
+
+    private void InitializeViewModeDepthRanges()
+    {
+        _currentViewMode = GetSelectedViewMode();
+
+        var fileMaxRange = GetFileMaxRangeMeters();
+        _stackedDepthRange = DepthRangeState.Manual(fileMaxRange > 0 ? fileMaxRange : null, 0);
+        _overlayDepthRange = DepthRangeState.Manual(fileMaxRange > 0 ? fileMaxRange : null, 0);
+        _sideScanDepthRange = DepthRangeState.Manual(null, 0);
+        _channelStatesByView = new Dictionary<ViewModeKind, Dictionary<int, ChannelDisplayState>>
+        {
+            [ViewModeKind.Stacked] = CaptureChannelState(),
+            [ViewModeKind.Overlay] = CaptureChannelState(),
+            [ViewModeKind.SideScan] = CaptureChannelState()
+        };
+        RestoreDepthRangeState(_currentViewMode);
+    }
+
+    private ViewModeKind GetSelectedViewMode()
+    {
+        if (SideScanMode.IsChecked == true)
+        {
+            return ViewModeKind.SideScan;
+        }
+
+        if (OverlayMode.IsChecked == true)
+        {
+            return ViewModeKind.Overlay;
+        }
+
+        return ViewModeKind.Stacked;
+    }
+
+    private static ViewModeKind? ParseViewMode(string? value)
+    {
+        return Enum.TryParse<ViewModeKind>(value, ignoreCase: true, out var viewMode)
+            ? viewMode
+            : null;
+    }
+
+    private void SetSelectedViewMode(ViewModeKind viewMode)
+    {
+        switch (viewMode)
+        {
+            case ViewModeKind.SideScan:
+                SideScanMode.IsChecked = true;
+                break;
+            case ViewModeKind.Overlay:
+                OverlayMode.IsChecked = true;
+                break;
+            default:
+                StackedMode.IsChecked = true;
+                break;
+        }
+    }
+
+    private void SaveDepthRangeState(ViewModeKind viewMode)
+    {
+        var state = new DepthRangeState(_isDepthAutoRange, _manualMaxDepthMeters, _manualDepthOffsetMeters);
+        switch (viewMode)
+        {
+            case ViewModeKind.SideScan:
+                _sideScanDepthRange = state;
+                break;
+            case ViewModeKind.Overlay:
+                _overlayDepthRange = state;
+                break;
+            default:
+                _stackedDepthRange = state;
+                break;
+        }
+    }
+
+    private void SaveCurrentViewState()
+    {
+        SaveDepthRangeState(_currentViewMode);
+        SaveChannelState(_currentViewMode);
+    }
+
+    private void SaveChannelState(ViewModeKind viewMode)
+    {
+        _channelStatesByView[viewMode] = CaptureChannelState();
+    }
+
+    private Dictionary<int, ChannelDisplayState> CaptureChannelState()
+    {
+        return _channels.ToDictionary(
+            channel => channel.Channel.ChannelId,
+            channel => new ChannelDisplayState(channel.IsVisible, channel.StoredOpacity));
+    }
+
+    private void RestoreChannelState(ViewModeKind viewMode)
+    {
+        if (!_channelStatesByView.TryGetValue(viewMode, out var states))
+        {
+            return;
+        }
+
+        foreach (var channel in _channels)
+        {
+            if (!states.TryGetValue(channel.Channel.ChannelId, out var state))
+            {
+                continue;
+            }
+
+            channel.Opacity = state.Opacity;
+            channel.IsVisible = state.IsVisible;
+        }
+    }
+
+    private void RestoreDepthRangeState(ViewModeKind viewMode)
+    {
+        var state = viewMode switch
+        {
+            ViewModeKind.SideScan => _sideScanDepthRange,
+            ViewModeKind.Overlay => _overlayDepthRange,
+            _ => _stackedDepthRange
+        };
+
+        _isDepthAutoRange = state.IsAuto;
+        _manualMaxDepthMeters = state.ManualMaxDepthMeters;
+        _manualDepthOffsetMeters = state.ManualDepthOffsetMeters;
+
+        if (viewMode == ViewModeKind.SideScan && !_isDepthAutoRange && _manualMaxDepthMeters is null && _sideScanMaxRangeMeters > 0)
+        {
+            _manualMaxDepthMeters = _sideScanMaxRangeMeters;
+        }
+
+        ClampManualDepthOffset();
+        UpdateDepthAutoButtonState();
+        UpdateDepthPanScrollBarState();
+        RefreshDepthRangeInputs();
     }
 
     private void RenderStacked(IReadOnlyList<ChannelViewModel> channels)
@@ -1835,7 +2450,20 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                cursor.Margin = new Thickness((parent.ActualWidth - cursor.Width) * t, 0, 0, 0);
+                cursor.HorizontalAlignment = HorizontalAlignment.Left;
+                cursor.VerticalAlignment = VerticalAlignment.Stretch;
+                if (!double.IsFinite(cursor.Width))
+                {
+                    cursor.Width = 2;
+                }
+
+                var cursorLeft = (parent.ActualWidth - cursor.Width) * t;
+                if (!double.IsFinite(cursorLeft))
+                {
+                    continue;
+                }
+
+                cursor.Margin = new Thickness(cursorLeft, 0, 0, 0);
             }
 
             var labelText = FormatCursorLocalTime();
@@ -1847,9 +2475,21 @@ public partial class MainWindow : Window
                 }
 
                 label.Text = labelText;
+                label.HorizontalAlignment = HorizontalAlignment.Left;
+                label.VerticalAlignment = VerticalAlignment.Bottom;
                 label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                if (!double.IsFinite(label.DesiredSize.Width))
+                {
+                    continue;
+                }
+
                 var left = (parent.ActualWidth - label.DesiredSize.Width) / 2.0;
                 var maxLeft = Math.Max(0, parent.ActualWidth - label.DesiredSize.Width);
+                if (!double.IsFinite(left) || !double.IsFinite(maxLeft))
+                {
+                    continue;
+                }
+
                 label.Margin = new Thickness(Math.Clamp(left, 0, maxLeft), 0, 0, 4);
             }
         }
@@ -2073,7 +2713,79 @@ public partial class MainWindow : Window
         var index = lo + t;
         return Math.Clamp(index / last, 0, 1);
     }
+
+    private sealed record RenderRequest(
+        SonarRecording Recording,
+        double DisplayMinRangeMeters,
+        double DisplayMaxRangeMeters,
+        string? PaletteName,
+        double LowPercentile,
+        double HighPercentile,
+        bool LockAcrossChannels,
+        double SideScanBoost,
+        bool IsSideScanMode);
+
+    private sealed record RenderResult(
+        IReadOnlyDictionary<int, BitmapSource>? RawChannelImages,
+        BitmapSource? SideScanImage,
+        double SideScanMaxRangeMeters);
 }
+
+public enum ViewModeKind
+{
+    Stacked,
+    Overlay,
+    SideScan
+}
+
+public sealed record DepthRangeState(
+    bool IsAuto,
+    double? ManualMaxDepthMeters,
+    double ManualDepthOffsetMeters)
+{
+    public static DepthRangeState Auto() => new(true, null, 0);
+
+    public static DepthRangeState Manual(double? manualMaxDepthMeters, double manualDepthOffsetMeters) =>
+        new(false, manualMaxDepthMeters, manualDepthOffsetMeters);
+}
+
+public sealed record ChannelDisplayState(bool IsVisible, double Opacity);
+
+public sealed record ProjectPlayerSettings(
+    string? ActiveViewMode,
+    ProjectViewSettings? Views,
+    ProjectDisplaySettings? Display,
+    ProjectUnitSettings? Units,
+    ProjectTimelineSettings? Timeline);
+
+public sealed record ProjectViewSettings(
+    ProjectSingleViewSettings? Stacked,
+    ProjectSingleViewSettings? Overlay,
+    ProjectSingleViewSettings? SideScan);
+
+public sealed record ProjectSingleViewSettings(
+    DepthRangeState? DepthRange,
+    Dictionary<string, ChannelDisplayState>? Channels);
+
+public sealed record ProjectDisplaySettings(
+    string? PaletteName,
+    bool? ShowFullPaletteList,
+    string? ContrastPreset,
+    bool? ContrastLockAcrossChannels,
+    double? CustomContrastLowPercentile,
+    double? CustomContrastHighPercentile,
+    double? SideScanContrastBoost);
+
+public sealed record ProjectUnitSettings(
+    string? Depth,
+    string? Speed,
+    string? Temperature,
+    int? UtcOffsetHours);
+
+public sealed record ProjectTimelineSettings(
+    double? ZoomWindowSeconds,
+    double? PlaybackRate,
+    double? AlongTrackStretch);
 
 public sealed class ChannelViewModel : INotifyPropertyChanged
 {
@@ -2138,6 +2850,8 @@ public sealed class ChannelViewModel : INotifyPropertyChanged
             OnPropertyChanged();
         }
     }
+
+    public double StoredOpacity => _opacity;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 

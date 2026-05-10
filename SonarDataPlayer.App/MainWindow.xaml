@@ -35,9 +35,17 @@
                         Margin="0,0,14,0"
                         Click="PythonSettings_Click"
                         Content="Python..." />
+                <Button x:Name="SaveProjectButton"
+                        DockPanel.Dock="Left"
+                        Width="112"
+                        Height="34"
+                        Margin="0,0,14,0"
+                        Click="SaveProject_Click"
+                        IsEnabled="False"
+                        Content="Save Project" />
                 <TextBlock x:Name="ProjectStatusText"
                            DockPanel.Dock="Left"
-                           Width="260"
+                           Width="150"
                            VerticalAlignment="Center"
                            Foreground="#8E9AAD"
                            Margin="0,0,16,0"
@@ -271,6 +279,7 @@
                             Minimum="0"
                             Maximum="20"
                             ValueChanged="ContrastCustomSlider_ValueChanged"
+                            PreviewMouseLeftButtonUp="RenderSettingSlider_PreviewMouseLeftButtonUp"
                             Margin="0,0,0,8" />
 
                         <TextBlock x:Name="ContrastHighClipLabel"
@@ -282,6 +291,7 @@
                             Minimum="80"
                             Maximum="100"
                             ValueChanged="ContrastCustomSlider_ValueChanged"
+                            PreviewMouseLeftButtonUp="RenderSettingSlider_PreviewMouseLeftButtonUp"
                             Margin="0,0,0,12" />
 
                     <CheckBox x:Name="ContrastLockCheckBox"
@@ -301,6 +311,7 @@
                             Maximum="2"
                             TickFrequency="0.05"
                             ValueChanged="SideScanBoostSlider_ValueChanged"
+                            PreviewMouseLeftButtonUp="RenderSettingSlider_PreviewMouseLeftButtonUp"
                             Margin="0,0,0,12" />
 
                     <Separator Margin="0,0,0,14" Background="#2B3442" />
