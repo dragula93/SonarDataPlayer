@@ -13,4 +13,8 @@ public sealed record PingTelemetry(
     double? Longitude,
     double? SpeedMetersPerSecond,
     double? HeadingDegrees,
-    double? TemperatureCelsius);
+    double? TemperatureCelsius,
+    double? TrackDistanceMeters,
+    double? Gain,
+    string? Survey,
+    string? Frequency);

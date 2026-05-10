@@ -119,7 +119,11 @@ public static class ProcessedProjectLoader
                 NullableDouble(cells, index, "lon"),
                 NullableDouble(cells, index, "speed_ms"),
                 NullableDouble(cells, index, "instr_heading"),
-                NullableDouble(cells, index, "tempC", "water_temp")));
+                NullableDouble(cells, index, "tempC", "water_temp", "water_temperature"),
+                NullableDouble(cells, index, "trk_dist"),
+                NullableDouble(cells, index, "gain"),
+                Text(cells, index, "survey"),
+                Text(cells, index, "frequency")));
         }
 
         return rows.OrderBy(r => r.TimeSeconds).ToArray();
@@ -174,6 +178,21 @@ public static class ProcessedProjectLoader
                 double.TryParse(cells[i], NumberStyles.Any, CultureInfo.InvariantCulture, out var value))
             {
                 return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? Text(string[] cells, IReadOnlyDictionary<string, int> index, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (index.TryGetValue(name, out var i) &&
+                i < cells.Length &&
+                !string.IsNullOrWhiteSpace(cells[i]))
+            {
+                return cells[i];
             }
         }
 

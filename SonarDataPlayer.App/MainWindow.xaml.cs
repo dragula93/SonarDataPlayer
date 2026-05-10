@@ -73,6 +73,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _renderCancellation;
     private int _renderRequestVersion;
     private string? _manifestPath;
+    private IReadOnlyDictionary<int, PingTelemetry[]> _telemetryByChannel = new Dictionary<int, PingTelemetry[]>();
     private bool _isProjectDirty;
     private bool _isApplyingProjectSettings;
     private ViewModeKind _currentViewMode = ViewModeKind.Stacked;
@@ -257,6 +258,11 @@ public partial class MainWindow : Window
         CancelPendingRender();
         _manifestPath = manifestPath;
         _recording = ProcessedProjectLoader.Load(manifestPath);
+        _telemetryByChannel = _recording.Telemetry
+            .GroupBy(ping => ping.ChannelId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(ping => ping.TimeSeconds).ToArray());
         _rawChannelImages = new Dictionary<int, BitmapSource>();
         _sideScanImage = null;
         _sideScanMaxRangeMeters = 0;
@@ -904,8 +910,10 @@ public partial class MainWindow : Window
         }
 
         DepthReadout.Text = $"Depth: {FormatDepth(ping.DepthMeters)}";
-        PositionReadout.Text = $"Position: {Format(ping.Latitude, "0.000000")}, {Format(ping.Longitude, "0.000000")}";
+        PositionReadout.Text = $"Position: {FormatPosition(ping.Latitude, ping.Longitude)}";
+        TrackDistanceReadout.Text = $"Track: {FormatTrackDistance(ping.TrackDistanceMeters)}";
         SpeedReadout.Text = $"Speed: {FormatSpeed(ping.SpeedMetersPerSecond)}";
+        UpdateSignalReadouts();
         UpdateHeadingCompass(ping.HeadingDegrees);
         TempReadout.Text = $"Water Temp: {FormatTemperature(ping.TemperatureCelsius)}";
         UpdateViewerTelemetry(ping);
@@ -930,6 +938,18 @@ public partial class MainWindow : Window
         return value.HasValue ? value.Value.ToString(format) : "-";
     }
 
+    private static string FormatOptionalNumber(double? value, string format)
+    {
+        return value.HasValue ? value.Value.ToString(format) : "N/A";
+    }
+
+    private static string FormatPosition(double? latitude, double? longitude)
+    {
+        return latitude.HasValue && longitude.HasValue
+            ? $"{latitude.Value:0.000000}, {longitude.Value:0.000000}"
+            : "N/A";
+    }
+
     private void UpdateAlongTrackStretchReadout()
     {
         if (AlongTrackStretchValueText is not null)
@@ -942,7 +962,7 @@ public partial class MainWindow : Window
     {
         if (!meters.HasValue)
         {
-            return "-";
+            return "N/A";
         }
 
         var (value, suffix) = _depthUnit switch
@@ -953,6 +973,215 @@ public partial class MainWindow : Window
         };
 
         return $"{value:0.0} {suffix}";
+    }
+
+    private string FormatRange(double? minMeters, double? maxMeters)
+    {
+        return minMeters.HasValue || maxMeters.HasValue
+            ? $"{FormatDepth(minMeters)} - {FormatDepth(maxMeters)}"
+            : "N/A";
+    }
+
+    private string FormatTrackDistance(double? meters)
+    {
+        if (!meters.HasValue)
+        {
+            return "N/A";
+        }
+
+        if (_speedUnit == SpeedUnit.Knots)
+        {
+            var nauticalMiles = meters.Value / 1852.0;
+            return $"{nauticalMiles:0.00} nmi";
+        }
+
+        var miles = meters.Value / 1609.344;
+        return miles >= 0.1
+            ? $"{miles:0.00} mi"
+            : $"{meters.Value * 3.280839895:0} ft";
+    }
+
+    private void UpdateSignalReadouts()
+    {
+        var signals = GetDisplayedSignalChannels()
+            .Select(channel => new ChannelSignalSnapshot(
+                channel,
+                FindNearestTelemetry(channel.ChannelId, _playback.CurrentTimeSeconds)))
+            .ToArray();
+
+        if (signals.Length == 0)
+        {
+            SignalModeReadout.Text = "Signal: N/A";
+            SignalRangeReadout.Text = "Range: N/A";
+            SignalGainReadout.Text = "Gain: N/A";
+            return;
+        }
+
+        SignalModeReadout.Text = $"Signal: {FormatSignalSummary(signals)}";
+        SignalRangeReadout.Text = IsSideScanMode()
+            ? $"Swath: {FormatSwath(signals)}"
+            : $"Range: {FormatSignalRange(signals)}";
+        SignalGainReadout.Text = $"Gain: {FormatSignalGain(signals)}";
+    }
+
+    private IReadOnlyList<ChannelTrack> GetDisplayedSignalChannels()
+    {
+        var visible = _channels
+            .Where(channel => channel.IsVisible)
+            .Select(channel => channel.Channel)
+            .ToArray();
+
+        if (!IsSideScanMode())
+        {
+            return visible;
+        }
+
+        var sideScan = visible
+            .Where(channel =>
+                channel.Label.Contains("Side", StringComparison.OrdinalIgnoreCase) ||
+                channel.Mode.Contains("Side", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(channel.Orientation, "Port", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(channel.Orientation, "Starboard", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        return sideScan.Length > 0 ? sideScan : visible;
+    }
+
+    private PingTelemetry? FindNearestTelemetry(int channelId, double timeSeconds)
+    {
+        if (!_telemetryByChannel.TryGetValue(channelId, out var pings) || pings.Length == 0)
+        {
+            return null;
+        }
+
+        var lo = 0;
+        var hi = pings.Length - 1;
+        while (lo < hi)
+        {
+            var mid = lo + ((hi - lo) / 2);
+            if (pings[mid].TimeSeconds < timeSeconds)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+
+        if (lo == 0)
+        {
+            return pings[0];
+        }
+
+        var before = pings[lo - 1];
+        var after = pings[lo];
+        return Math.Abs(before.TimeSeconds - timeSeconds) <= Math.Abs(after.TimeSeconds - timeSeconds)
+            ? before
+            : after;
+    }
+
+    private string FormatSignalSummary(IReadOnlyList<ChannelSignalSnapshot> signals)
+    {
+        var summaries = signals
+            .Select(signal => FormatSignalMode(signal.Channel, signal.Ping))
+            .Where(text => !string.IsNullOrWhiteSpace(text) && !string.Equals(text, "N/A", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return summaries.Length == 0 ? "N/A" : string.Join(Environment.NewLine, summaries);
+    }
+
+    private string FormatSignalMode(ChannelTrack channel, PingTelemetry? ping)
+    {
+        var mode = channel.Mode;
+        if (!string.IsNullOrWhiteSpace(channel.Orientation))
+        {
+            mode = string.IsNullOrWhiteSpace(mode)
+                ? channel.Orientation
+                : $"{mode} {channel.Orientation}";
+        }
+
+        if (string.IsNullOrWhiteSpace(mode))
+        {
+            mode = ping?.Survey;
+        }
+
+        var frequency = FormatSignalFrequency(channel, ping);
+        if (string.IsNullOrWhiteSpace(mode) && string.IsNullOrWhiteSpace(frequency))
+        {
+            return "N/A";
+        }
+
+        return string.IsNullOrWhiteSpace(frequency)
+            ? mode ?? "N/A"
+            : $"{mode ?? "Signal"} {frequency}";
+    }
+
+    private string FormatSignalRange(IReadOnlyList<ChannelSignalSnapshot> signals)
+    {
+        var min = signals
+            .Select(signal => signal.Ping?.MinimumRangeMeters)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .DefaultIfEmpty(double.NaN)
+            .Min();
+        var max = signals
+            .Select(signal => signal.Ping?.MaximumRangeMeters)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .DefaultIfEmpty(double.NaN)
+            .Max();
+
+        return double.IsNaN(min) && double.IsNaN(max)
+            ? "N/A"
+            : FormatRange(double.IsNaN(min) ? null : min, double.IsNaN(max) ? null : max);
+    }
+
+    private string FormatSwath(IReadOnlyList<ChannelSignalSnapshot> signals)
+    {
+        var max = signals
+            .Select(signal => signal.Ping?.MaximumRangeMeters)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .DefaultIfEmpty(double.NaN)
+            .Max();
+
+        return double.IsNaN(max) ? "N/A" : $"{FormatDepth(max)} each side";
+    }
+
+    private static string FormatSignalGain(IReadOnlyList<ChannelSignalSnapshot> signals)
+    {
+        var gains = signals
+            .Select(signal => signal.Ping?.Gain)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value.ToString("0"))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return gains.Length == 0 ? "N/A" : string.Join(" | ", gains);
+    }
+
+    private static string? FormatSignalFrequency(ChannelTrack channel, PingTelemetry? ping)
+    {
+        if (!string.IsNullOrWhiteSpace(ping?.Frequency))
+        {
+            return ping.Frequency;
+        }
+
+        if (channel.StartFrequencyHz is not { } startHz || channel.EndFrequencyHz is not { } endHz)
+        {
+            return null;
+        }
+
+        return startHz == endHz
+            ? $"{FormatKhz(startHz)} kHz"
+            : $"{FormatKhz(startHz)}-{FormatKhz(endHz)} kHz";
+    }
+
+    private static string FormatKhz(int hz)
+    {
+        return (hz / 1000.0).ToString("0");
     }
 
     private string FormatSpeed(double? metersPerSecond)
@@ -2738,6 +2967,8 @@ public partial class MainWindow : Window
         IReadOnlyDictionary<int, BitmapSource>? RawChannelImages,
         BitmapSource? SideScanImage,
         double SideScanMaxRangeMeters);
+
+    private sealed record ChannelSignalSnapshot(ChannelTrack Channel, PingTelemetry? Ping);
 }
 
 public enum ViewModeKind
