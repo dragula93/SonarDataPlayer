@@ -13,6 +13,7 @@ The app is intentionally a single-process .NET desktop program: no web server, N
 - Raw sample playback using `frames.jsonl` and `samples.u16le`, with PNG preview/fallback assets.
 - Play, pause, seek, speed selection, channel visibility, opacity controls, and telemetry readouts.
 - Depth, speed, temperature unit controls, time/depth zoom, auto depth range, and stacked/overlay channel views.
+- Project-specific playback/display settings saved back into each project's `manifest.json`.
 - Python/PINGverter settings dialog with interpreter testing and saved project root selection.
 
 Raw recording parsing is currently delegated to a configured local PINGverter checkout. Porting direct parsers into the application remains a future cleanup step.
@@ -68,6 +69,8 @@ See [docs/processed-project-format.md](docs/processed-project-format.md) for the
 
 ## Settings
 
+SonarDataPlayer has both app-wide settings and project-specific settings.
+
 Use **Python...** to configure project creation:
 
 - View the `SONAR_DATA_PLAYER_PYTHON` environment variable.
@@ -81,6 +84,21 @@ Settings are saved under:
 ```text
 %AppData%\SonarDataPlayer\settings.json
 ```
+
+These app-wide settings are only for Python/PINGverter setup and other global preferences.
+
+Use **Save Project** to save playback and display choices into the currently loaded project's `manifest.json`. The button is disabled when the loaded project has no pending setting changes and enables after project-specific playback/display settings change.
+
+Saved project-specific settings include:
+
+- Active view mode and per-view channel visibility/opacity.
+- Per-view depth/range state for Stacked, Overlay, and Side Scan.
+- Color scheme, palette list visibility, contrast preset/custom clips, and contrast lock.
+- Side-scan boost.
+- Depth, speed, water temperature, and UTC offset units.
+- Timeline zoom, playback speed, and along-track stretch.
+
+Because these settings are stored in the project manifest, they travel with that processed project. Opening a different project loads that project's own saved display/playback settings instead of reusing the previous project's UI state.
 
 ## Create A Project From A Recording
 
