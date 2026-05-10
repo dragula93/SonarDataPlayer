@@ -1,7 +1,7 @@
 <Window x:Class="SonarDataPlayer.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Sonar Data Player v0.4.1"
+        Title="Sonar Data Player v0.4.2"
         Height="860"
         MinHeight="660"
         Width="1280"
@@ -102,7 +102,7 @@
                            Text="No recording loaded" />
                 <TextBlock DockPanel.Dock="Right"
                            Width="72"
-                           Text="v0.4.1"
+                           Text="v0.4.2"
                            Foreground="#8E9AAD"
                            TextAlignment="Right"
                            VerticalAlignment="Center"

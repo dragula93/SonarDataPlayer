@@ -655,7 +655,8 @@ public static class BinaryWaterfallRenderer
         //   x in [portMaxSamples, width)    → starboard
         // Sample order can vary by channel and source. We normalize per-channel so the
         // composed view is always nadir-centred with near->far outwards on both sides.
-        var imgWidth = portMaxSamples + starMaxSamples;
+        var sideMaxSamples = Math.Max(portMaxSamples, starMaxSamples);
+        var imgWidth = sideMaxSamples * 2;
         var imgHeight = recording.Frames.Count;
         var pixels = new byte[imgWidth * imgHeight * 4];
 
@@ -687,7 +688,7 @@ public static class BinaryWaterfallRenderer
                             var sourceSample = reversePort ? (count - 1 - s) : s;
                             var sourceRawIndex = sourceSample * 2;
                             var sourceValue = (ushort)(raw[sourceRawIndex] | (raw[sourceRawIndex + 1] << 8));
-                            var x = portMaxSamples - 1 - s;
+                            var x = sideMaxSamples - 1 - s;
                             PaintPixel(pixels, x, drawY, imgWidth, sourceValue, portContrast, gamma, palette);
                         }
                     }
@@ -708,7 +709,7 @@ public static class BinaryWaterfallRenderer
                             var sourceSample = reverseStar ? (count - 1 - s) : s;
                             var sourceRawIndex = sourceSample * 2;
                             var sourceValue = (ushort)(raw[sourceRawIndex] | (raw[sourceRawIndex + 1] << 8));
-                            var x = portMaxSamples + s;
+                            var x = sideMaxSamples + s;
                             PaintPixel(pixels, x, drawY, imgWidth, sourceValue, starContrast, gamma, palette);
                         }
                     }

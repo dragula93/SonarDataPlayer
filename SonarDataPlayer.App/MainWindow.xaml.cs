@@ -2529,12 +2529,9 @@ public partial class MainWindow : Window
                 }
 
                 var imageHeight = parent.ActualHeight / windowFraction;
-                var unclampedTop = -(imageHeight * (1.0 - endFraction));
-                var minTop = parent.ActualHeight - imageHeight;
-                var top = Math.Clamp(unclampedTop, minTop, 0);
+                var currentFraction = GetPlaybackRenderFraction();
+                var top = -(imageHeight * (1.0 - currentFraction));
                 image.Height = imageHeight;
-                // ScaleTransform(1,-1) is applied once at image creation; do not
-                // recreate it here to avoid triggering layout on every frame.
                 image.Margin = new Thickness(0, top, 0, 0);
 
                 // Cross-track crop: show [displayMin .. displayMax] metres centred on nadir.
@@ -2547,8 +2544,8 @@ public partial class MainWindow : Window
                     // fraction of one side (port or star) that is visible
                     var visibleFrac = Math.Clamp(displayMax / _sideScanMaxRangeMeters, 0.001, 1.0);
                     var skipFrac   = Math.Clamp(displayMin / _sideScanMaxRangeMeters, 0.0,   1.0);
-                    // total bitmap width scaled so that visibleFrac fills the panel
-                    var totalScaledWidth = parent.ActualWidth / ((visibleFrac - skipFrac) * 2.0);
+                    // Total bitmap width scaled so the symmetric visible range fills the panel.
+                    var totalScaledWidth = parent.ActualWidth / Math.Max(0.001, visibleFrac - skipFrac);
                     image.Width = totalScaledWidth;
                     // centre of bitmap should land at centre of panel
                     // left edge offset: panel_centre - (halfBitmap_fraction * scaledWidth)
